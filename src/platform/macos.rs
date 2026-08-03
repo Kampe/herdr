@@ -970,7 +970,7 @@ pub fn signal_processes(pids: &[u32], signal: Signal) {
 }
 
 fn valid_libc_pid(pid: u32) -> Option<libc::pid_t> {
-    (pid > 0 && pid <= libc::pid_t::MAX as u32).then_some(pid as libc::pid_t)
+    (pid > 1 && pid <= libc::pid_t::MAX as u32).then_some(pid as libc::pid_t)
 }
 
 pub fn process_exists(pid: u32) -> bool {

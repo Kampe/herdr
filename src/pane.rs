@@ -1233,12 +1233,14 @@ fn shutdown_pane_processes(
     child_pid: u32,
     child_wait_completed: Option<&AtomicBool>,
 ) {
+    let caller_pid = std::process::id();
     let session_processes = crate::platform::session_processes;
     let signal_processes = crate::platform::signal_processes;
     let process_exists = crate::platform::process_exists;
     let wait = std::thread::sleep;
     shutdown_pane_processes_with(
         pane_id,
+        caller_pid,
         child_pid,
         child_wait_completed,
         &session_processes,
@@ -1248,8 +1250,36 @@ fn shutdown_pane_processes(
     );
 }
 
+fn valid_shutdown_identity(pid: u32, caller_pid: u32) -> bool {
+    pid > 1 && pid != caller_pid
+}
+
+fn validated_shutdown_targets(
+    caller_pid: u32,
+    child_pid: u32,
+    session_pids: Vec<u32>,
+) -> Vec<u32> {
+    if !valid_shutdown_identity(child_pid, caller_pid) {
+        return Vec::new();
+    }
+
+    let mut owned_pids = if session_pids.is_empty() {
+        vec![child_pid]
+    } else {
+        if !session_pids.contains(&child_pid) {
+            return Vec::new();
+        }
+        session_pids
+    };
+    owned_pids.retain(|pid| valid_shutdown_identity(*pid, caller_pid));
+    owned_pids.sort_unstable();
+    owned_pids.dedup();
+    owned_pids
+}
+
 fn shutdown_pane_processes_with(
     pane_id: PaneId,
+    caller_pid: u32,
     child_pid: u32,
     child_wait_completed: Option<&AtomicBool>,
     session_processes: &dyn Fn(u32) -> Vec<u32>,
@@ -1257,16 +1287,10 @@ fn shutdown_pane_processes_with(
     process_exists: &dyn Fn(u32) -> bool,
     wait: &dyn Fn(std::time::Duration),
 ) {
-    if child_pid == 0 {
+    let pids = validated_shutdown_targets(caller_pid, child_pid, session_processes(child_pid));
+    if pids.is_empty() {
         return;
     }
-
-    let mut pids = session_processes(child_pid);
-    if pids.is_empty() {
-        pids.push(child_pid);
-    }
-    pids.sort_unstable();
-    pids.dedup();
 
     for (signal, grace) in [
         (
@@ -3115,6 +3139,7 @@ mod tests {
 
         shutdown_pane_processes_with(
             PaneId::from_raw(1),
+            999,
             42,
             None,
             &|_| Vec::new(),
@@ -3146,6 +3171,7 @@ mod tests {
 
         shutdown_pane_processes_with(
             PaneId::from_raw(1),
+            999,
             42,
             None,
             &|_| vec![42, 43],
@@ -3171,12 +3197,67 @@ mod tests {
 
         shutdown_pane_processes_with(
             PaneId::from_raw(1),
+            999,
             42,
             Some(&child_wait_completed),
             &|_| vec![42],
             &signal_processes,
             &process_exists,
             &wait,
+        );
+
+        assert!(signals.borrow().is_empty());
+    }
+
+    #[test]
+    fn shutdown_with_fake_invalid_child_never_signals() {
+        let signals = std::cell::RefCell::new(Vec::new());
+        let signal_processes = |pids: &[u32], signal| signals.borrow_mut().push((pids.to_vec(), signal));
+
+        shutdown_pane_processes_with(
+            PaneId::from_raw(1),
+            999,
+            1,
+            &|_| vec![1, 2],
+            &signal_processes,
+            &|_| true,
+            &|_| {},
+        );
+
+        assert!(signals.borrow().is_empty());
+    }
+
+    #[test]
+    fn shutdown_with_fake_self_target_never_signals() {
+        let signals = std::cell::RefCell::new(Vec::new());
+        let signal_processes = |pids: &[u32], signal| signals.borrow_mut().push((pids.to_vec(), signal));
+
+        shutdown_pane_processes_with(
+            PaneId::from_raw(1),
+            42,
+            42,
+            &|_| vec![42],
+            &signal_processes,
+            &|_| true,
+            &|_| {},
+        );
+
+        assert!(signals.borrow().is_empty());
+    }
+
+    #[test]
+    fn shutdown_with_fake_unowned_session_target_never_signals() {
+        let signals = std::cell::RefCell::new(Vec::new());
+        let signal_processes = |pids: &[u32], signal| signals.borrow_mut().push((pids.to_vec(), signal));
+
+        shutdown_pane_processes_with(
+            PaneId::from_raw(1),
+            999,
+            42,
+            &|_| vec![43, 44],
+            &signal_processes,
+            &|_| true,
+            &|_| {},
         );
 
         assert!(signals.borrow().is_empty());
