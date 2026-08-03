@@ -1204,6 +1204,8 @@ fn wait_for_processes_to_exit(
     child_pid: u32,
     child_wait_completed: Option<&AtomicBool>,
     timeout: std::time::Duration,
+    process_exists: &dyn Fn(u32) -> bool,
+    wait: &dyn Fn(std::time::Duration),
 ) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {
@@ -1214,7 +1216,7 @@ fn wait_for_processes_to_exit(
                 *pid,
                 child_pid,
                 child_wait_completed,
-                crate::platform::process_exists,
+                process_exists,
             )
         }) {
             return true;
@@ -1222,7 +1224,7 @@ fn wait_for_processes_to_exit(
         if std::time::Instant::now() >= deadline {
             return false;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        wait(std::time::Duration::from_millis(20));
     }
 }
 
@@ -1231,11 +1233,35 @@ fn shutdown_pane_processes(
     child_pid: u32,
     child_wait_completed: Option<&AtomicBool>,
 ) {
+    let session_processes = crate::platform::session_processes;
+    let signal_processes = crate::platform::signal_processes;
+    let process_exists = crate::platform::process_exists;
+    let wait = std::thread::sleep;
+    shutdown_pane_processes_with(
+        pane_id,
+        child_pid,
+        child_wait_completed,
+        &session_processes,
+        &signal_processes,
+        &process_exists,
+        &wait,
+    );
+}
+
+fn shutdown_pane_processes_with(
+    pane_id: PaneId,
+    child_pid: u32,
+    child_wait_completed: Option<&AtomicBool>,
+    session_processes: &dyn Fn(u32) -> Vec<u32>,
+    signal_processes: &dyn Fn(&[u32], crate::platform::Signal),
+    process_exists: &dyn Fn(u32) -> bool,
+    wait: &dyn Fn(std::time::Duration),
+) {
     if child_pid == 0 {
         return;
     }
 
-    let mut pids = crate::platform::session_processes(child_pid);
+    let mut pids = session_processes(child_pid);
     if pids.is_empty() {
         pids.push(child_pid);
     }
@@ -1256,8 +1282,15 @@ fn shutdown_pane_processes(
             std::time::Duration::from_millis(250),
         ),
     ] {
-        crate::platform::signal_processes(&pids, signal);
-        if wait_for_processes_to_exit(&pids, child_pid, child_wait_completed, grace) {
+        signal_processes(&pids, signal);
+        if wait_for_processes_to_exit(
+            &pids,
+            child_pid,
+            child_wait_completed,
+            grace,
+            process_exists,
+            wait,
+        ) {
             info!(
                 pane = pane_id.raw(),
                 pid = child_pid,
@@ -3067,6 +3100,86 @@ mod tests {
     #[test]
     fn shutdown_liveness_treats_missing_process_as_gone() {
         assert!(!process_alive_for_shutdown(43, 42, false, |_| false));
+    }
+
+    #[test]
+    fn shutdown_with_fake_session_falls_back_to_child_pid() {
+        use std::cell::RefCell;
+
+        let signals = RefCell::new(Vec::new());
+        let signal_processes = |pids: &[u32], signal| {
+            signals.borrow_mut().push((pids.to_vec(), signal));
+        };
+        let process_exists = |_pid| false;
+        let wait = |_| {};
+
+        shutdown_pane_processes_with(
+            PaneId::from_raw(1),
+            42,
+            None,
+            &|_| Vec::new(),
+            &signal_processes,
+            &process_exists,
+            &wait,
+        );
+
+        assert_eq!(
+            signals.borrow().as_slice(),
+            &[(vec![42], crate::platform::Signal::Hangup)]
+        );
+    }
+
+    #[test]
+    fn shutdown_with_fake_processes_escalates_until_they_exit() {
+        use std::cell::RefCell;
+
+        let signals = RefCell::new(Vec::new());
+        let alive = RefCell::new(true);
+        let signal_processes = |pids: &[u32], signal| {
+            signals.borrow_mut().push((pids.to_vec(), signal));
+            if signal == crate::platform::Signal::Terminate {
+                *alive.borrow_mut() = false;
+            }
+        };
+        let process_exists = |_| *alive.borrow();
+        let wait = |_| {};
+
+        shutdown_pane_processes_with(
+            PaneId::from_raw(1),
+            42,
+            None,
+            &|_| vec![42, 43],
+            &signal_processes,
+            &process_exists,
+            &wait,
+        );
+
+        assert_eq!(signals.borrow().len(), 2);
+        assert_eq!(signals.borrow()[0].1, crate::platform::Signal::Hangup);
+        assert_eq!(signals.borrow()[1].1, crate::platform::Signal::Terminate);
+    }
+
+    #[test]
+    fn shutdown_with_fake_reaped_child_does_not_wait_for_it() {
+        let signals = std::cell::RefCell::new(Vec::new());
+        let signal_processes = |pids: &[u32], signal| {
+            signals.borrow_mut().push((pids.to_vec(), signal));
+        };
+        let process_exists = |_pid| true;
+        let wait = |_| {};
+        let child_wait_completed = AtomicBool::new(true);
+
+        shutdown_pane_processes_with(
+            PaneId::from_raw(1),
+            42,
+            Some(&child_wait_completed),
+            &|_| vec![42],
+            &signal_processes,
+            &process_exists,
+            &wait,
+        );
+
+        assert!(signals.borrow().is_empty());
     }
 
     #[cfg(unix)]
