@@ -416,20 +416,22 @@ pub fn signal_processes(pids: &[u32], signal: Signal) {
     };
 
     for &pid in pids {
-        if pid == 0 {
-            continue;
-        }
+        let Some(pid) = valid_libc_pid(pid) else { continue };
         unsafe {
-            libc::kill(pid as i32, sig);
+            libc::kill(pid, sig);
         }
     }
 }
 
+fn valid_libc_pid(pid: u32) -> Option<libc::pid_t> {
+    (pid > 1 && pid <= libc::pid_t::MAX as u32).then_some(pid as libc::pid_t)
+}
+
 pub fn process_exists(pid: u32) -> bool {
-    if pid == 0 {
+    let Some(pid) = valid_libc_pid(pid) else {
         return false;
-    }
-    let result = unsafe { libc::kill(pid as i32, 0) };
+    };
+    let result = unsafe { libc::kill(pid, 0) };
     if result == 0 {
         true
     } else {
