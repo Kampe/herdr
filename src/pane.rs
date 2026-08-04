@@ -1306,7 +1306,19 @@ fn shutdown_pane_processes_with(
             std::time::Duration::from_millis(250),
         ),
     ] {
-        signal_processes(&pids, signal);
+        let signal_pids = if child_wait_completed
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            pids.iter()
+                .copied()
+                .filter(|pid| *pid != child_pid)
+                .collect::<Vec<_>>()
+        } else {
+            pids.clone()
+        };
+        if !signal_pids.is_empty() {
+            signal_processes(&signal_pids, signal);
+        }
         if wait_for_processes_to_exit(
             &pids,
             child_pid,
@@ -3207,6 +3219,35 @@ mod tests {
         );
 
         assert!(signals.borrow().is_empty());
+    }
+
+    #[test]
+    fn shutdown_with_fake_reaped_child_signals_live_descendant_only() {
+        let signals = std::cell::RefCell::new(Vec::new());
+        let signal_processes = |pids: &[u32], signal| {
+            signals.borrow_mut().push((pids.to_vec(), signal));
+        };
+        let child_wait_completed = AtomicBool::new(true);
+
+        shutdown_pane_processes_with(
+            PaneId::from_raw(1),
+            999,
+            42,
+            Some(&child_wait_completed),
+            &|_| vec![42, 43],
+            &signal_processes,
+            &|pid| pid == 43,
+            &|_| {},
+        );
+
+        assert_eq!(
+            signals.borrow().as_slice(),
+            &[
+                (vec![43], crate::platform::Signal::Hangup),
+                (vec![43], crate::platform::Signal::Terminate),
+                (vec![43], crate::platform::Signal::Kill),
+            ]
+        );
     }
 
     #[test]
