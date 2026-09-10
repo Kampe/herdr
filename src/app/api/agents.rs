@@ -98,14 +98,15 @@ impl App {
                 ),
             );
         }
-        if let Some(draft) =
-            super::super::agents::pending_operator_draft(expected_agent, terminal.state, runtime)
+        if super::super::agents::has_pending_operator_draft(expected_agent, terminal.state, runtime)
         {
+            // Fixed diagnostic only: the operator's draft bytes are never
+            // echoed into the API response or logs.
             return encode_error(
                 id,
                 "agent_prompt_draft_pending",
                 format!(
-                    "pane {} has unsubmitted operator input ({draft:?}); finish or clear it in the pane, then retry the prompt - it was not sent",
+                    "pane {} has unsubmitted operator input on its prompt line; finish or clear it in the pane, then retry the prompt - it was not sent",
                     params.target
                 ),
             );
@@ -566,6 +567,32 @@ mod tests {
         frame.into_bytes()
     }
 
+    /// Fixture with a HISTORIC glyph row (an earlier submitted prompt echo,
+    /// e.g. `❯ /login`) above the current input box, which is empty. The
+    /// bottom-most glyph row is the current input row; the historic one must
+    /// not block submission.
+    fn claude_historic_glyph_frame(historic: Option<&str>) -> Vec<u8> {
+        let rule = "─".repeat(40);
+        let historic_line = match historic {
+            Some(text) => format!("❯ {text}"),
+            None => "❯".to_string(),
+        };
+        let mut frame = String::new();
+        for i in 0..8 {
+            frame.push_str(&format!("context line {i:06}\r\n"));
+        }
+        frame.push_str(&historic_line);
+        frame.push_str("\r\n");
+        for i in 8..20 {
+            frame.push_str(&format!("output line {i:06}\r\n"));
+        }
+        frame.push_str(&rule);
+        frame.push_str("\r\n❯\r\n");
+        frame.push_str(&rule);
+        frame.push('\r');
+        frame.into_bytes()
+    }
+
     fn app_with_claude_pane(
         state: AgentState,
         frame: &[u8],
@@ -598,7 +625,6 @@ mod tests {
             },
         )
     }
-
     #[tokio::test]
     async fn agent_prompt_refuses_claude_slash_draft() {
         let (mut app, target, mut rx) =
@@ -608,9 +634,11 @@ mod tests {
             response.contains("agent_prompt_draft_pending"),
             "slash draft must fail closed: {response}"
         );
+        // The refusal is a fixed diagnostic: draft bytes never reach the API
+        // response or logs.
         assert!(
-            response.contains("/login"),
-            "error must quote the observed draft: {response}"
+            !response.contains("/login"),
+            "refusal must not echo draft bytes: {response}"
         );
         assert!(
             rx.try_recv().is_err(),
@@ -628,6 +656,10 @@ mod tests {
         assert!(
             response.contains("agent_prompt_draft_pending"),
             "ordinary draft must fail closed: {response}"
+        );
+        assert!(
+            !response.contains("half-typed"),
+            "refusal must not echo draft bytes: {response}"
         );
         assert!(rx.try_recv().is_err());
     }
@@ -647,7 +679,29 @@ mod tests {
             response.contains("agent_prompt_draft_pending"),
             "multiline draft must fail closed: {response}"
         );
+        assert!(
+            !response.contains("first draft line") && !response.contains("continuation two"),
+            "refusal must not echo draft bytes: {response}"
+        );
         assert!(rx.try_recv().is_err());
+    }
+
+    /// Historic glyph rows are superseded by the current input row: an
+    /// earlier submitted `❯ ...` echo in the bottom buffer followed by the
+    /// current EMPTY input box must not block the prompt.
+    #[tokio::test]
+    async fn agent_prompt_allows_historic_glyph_with_empty_current_prompt() {
+        let (mut app, target, mut rx) = app_with_claude_pane(
+            AgentState::Idle,
+            &claude_historic_glyph_frame(Some("/login")),
+        );
+        let response = prompt_response(&mut app, &target, "review the recovery bundle");
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(
+            matches!(success.result, ResponseResult::AgentPrompted { .. }),
+            "historic glyph above an empty current box must not refuse: {response}"
+        );
+        assert!(rx.try_recv().is_ok());
     }
 
     #[tokio::test]
