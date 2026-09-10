@@ -962,7 +962,9 @@ pub fn signal_processes(pids: &[u32], signal: Signal) {
     };
 
     for &pid in pids {
-        let Some(pid) = valid_libc_pid(pid) else { continue };
+        let Some(pid) = valid_libc_pid(pid) else {
+            continue;
+        };
         unsafe {
             libc::kill(pid, sig);
         }
