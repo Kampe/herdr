@@ -1,0 +1,111 @@
+name: prompt-draft-guard mutation proof
+
+on:
+  pull_request:
+    paths:
+      - "src/app/agents.rs"
+      - "src/app/api/agents.rs"
+      - ".ci/agent-prompt-draft-guard-mutant.patch"
+      - ".github/workflows/prompt-draft-guard-mutation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN_VERSION: 1.96.1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation-proof:
+    name: guard mutant RED then restored GREEN
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
+
+      - name: Install Rust tools
+        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2.81.9
+        with:
+          tool: just,cargo-nextest
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cache-bin: false
+          key: ubuntu-latest
+
+      - name: Apply production guard mutant
+        run: |
+          git apply --check .ci/agent-prompt-draft-guard-mutant.patch
+          git apply .ci/agent-prompt-draft-guard-mutant.patch
+          git diff --stat
+
+      - name: Mutant run (must FAIL)
+        run: |
+          set -o pipefail
+          set +e
+          cargo nextest run --locked -E 'test(agent_prompt_refuses_claude_slash_draft) or test(agent_prompt_refuses_claude_ordinary_draft) or test(agent_prompt_refuses_claude_multiline_draft) or test(agent_prompt_allows_historic_glyph_with_empty_current_prompt) or test(agent_prompt_succeeds_when_claude_input_box_empty) or test(agent_prompt_unchanged_when_claude_working_with_draft_like_output) or test(agent_prompt_unchanged_when_claude_blocked) or test(agent_prompt_unchanged_for_agents_without_draft_pattern)' --status-level all --final-status-level all --failure-output immediate-final --success-output final > .ci/mutant-run.log 2>&1
+          MUTANT_RC=$?
+          set -e
+          cat .ci/mutant-run.log
+          echo "mutant exit code: $MUTANT_RC"
+          if [ "$MUTANT_RC" -eq 0 ]; then
+            echo "::error::mutation proof vacuous: focused tests passed with the production guard disabled" >&2
+            exit 1
+          fi
+          for refused in agent_prompt_refuses_claude_slash_draft agent_prompt_refuses_claude_ordinary_draft agent_prompt_refuses_claude_multiline_draft; do
+            if ! grep -q "FAIL.*$refused" .ci/mutant-run.log; then
+              echo "::error::mutation proof incomplete: $refused did not fail under the mutant" >&2
+              exit 1
+            fi
+          done
+          echo "mutant RED confirmed with exit code $MUTANT_RC"
+
+      - name: Restore exact production bytes
+        run: |
+          git checkout -- src/app/agents.rs
+          git diff --exit-code src/app/agents.rs
+          git status --porcelain src/app/agents.rs
+
+      - name: Restored run (must PASS)
+        run: |
+          set -o pipefail
+          set +e
+          cargo nextest run --locked -E 'test(agent_prompt_refuses_claude_slash_draft) or test(agent_prompt_refuses_claude_ordinary_draft) or test(agent_prompt_refuses_claude_multiline_draft) or test(agent_prompt_allows_historic_glyph_with_empty_current_prompt) or test(agent_prompt_succeeds_when_claude_input_box_empty) or test(agent_prompt_unchanged_when_claude_working_with_draft_like_output) or test(agent_prompt_unchanged_when_claude_blocked) or test(agent_prompt_unchanged_for_agents_without_draft_pattern)' --status-level all --final-status-level all --failure-output immediate-final --success-output final > .ci/restored-run.log 2>&1
+          RESTORED_RC=$?
+          set -e
+          cat .ci/restored-run.log
+          echo "restored exit code: $RESTORED_RC"
+          exit "$RESTORED_RC"
+
+      - name: Upload raw proof logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: prompt-draft-guard-mutation-logs
+          path: |
+            .ci/mutant-run.log
+            .ci/restored-run.log
+          if-no-files-found: warn

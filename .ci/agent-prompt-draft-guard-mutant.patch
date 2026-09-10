@@ -1,0 +1,35 @@
+diff --git a/src/app/agents.rs b/src/app/agents.rs
+index d3f862ef..548dd4b8 100644
+--- a/src/app/agents.rs
++++ b/src/app/agents.rs
+@@ -457,25 +457,11 @@ pub(super) fn has_pending_operator_draft(
+     state: crate::detect::AgentState,
+     runtime: &crate::terminal::TerminalRuntime,
+ ) -> bool {
+-    if matches!(
+-        state,
+-        crate::detect::AgentState::Working | crate::detect::AgentState::Blocked
+-    ) {
+-        return false;
+-    }
+-    let glyph = match agent {
+-        crate::detect::Agent::Claude => '❯',
+-        _ => return false,
+-    };
+-    let mut current_row_has_draft = false;
+-    for line in runtime.detection_text().lines() {
+-        let mut chars = line.trim_start().chars();
+-        if chars.next() == Some(glyph) {
+-            let rest = chars.as_str().trim();
+-            current_row_has_draft = !rest.is_empty();
+-        }
+-    }
+-    current_row_has_draft
++    // MUTANT: production guard disabled to prove the focused tests detect
++    // its absence (remote CI mutation proof). Restore with
++    // `git checkout -- src/app/agents.rs`.
++    let _ = (agent, state, runtime);
++    false
+ }
+ 
+ fn live_runtime_agent(runtime: &crate::terminal::TerminalRuntime) -> Option<crate::detect::Agent> {
