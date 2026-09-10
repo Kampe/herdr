@@ -609,6 +609,10 @@ mod tests {
             crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
                 80, 24, 0, b"", 1,
             );
+        // Claude's prompt fixture models the native line editor, which enables
+        // bracketed paste. Keep the input mode explicit so the assertion below
+        // checks the real API contract rather than an unconfigured terminal.
+        runtime.test_process_pty_bytes(b"\x1b[?2004h");
         runtime.test_process_pty_bytes(frame);
         app.state.insert_test_runtime(pane_id, runtime);
         let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
