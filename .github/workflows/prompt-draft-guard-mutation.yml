@@ -66,7 +66,7 @@ jobs:
         run: |
           set -o pipefail
           set +e
-          cargo nextest run --locked -E 'test(agent_prompt_refuses_claude_slash_draft) or test(agent_prompt_refuses_claude_ordinary_draft) or test(agent_prompt_refuses_claude_multiline_draft) or test(agent_prompt_allows_historic_glyph_with_empty_current_prompt) or test(agent_prompt_succeeds_when_claude_input_box_empty) or test(agent_prompt_unchanged_when_claude_working_with_draft_like_output) or test(agent_prompt_unchanged_when_claude_blocked) or test(agent_prompt_unchanged_for_agents_without_draft_pattern)' --status-level all --final-status-level all --failure-output all --success-output all > .ci/mutant-run.log 2>&1
+          cargo nextest run --locked -E 'test(agent_prompt_refuses_claude_slash_draft) or test(agent_prompt_refuses_claude_ordinary_draft) or test(agent_prompt_refuses_claude_multiline_draft) or test(agent_prompt_allows_historic_glyph_with_empty_current_prompt) or test(agent_prompt_succeeds_when_claude_input_box_empty) or test(agent_prompt_unchanged_when_claude_working_with_draft_like_output) or test(agent_prompt_unchanged_when_claude_blocked) or test(agent_prompt_unchanged_for_agents_without_draft_pattern)' --status-level all --final-status-level all --failure-output immediate-final --success-output final > .ci/mutant-run.log 2>&1
           MUTANT_RC=$?
           set -e
           cat .ci/mutant-run.log
@@ -93,7 +93,7 @@ jobs:
         run: |
           set -o pipefail
           set +e
-          cargo nextest run --locked -E 'test(agent_prompt_refuses_claude_slash_draft) or test(agent_prompt_refuses_claude_ordinary_draft) or test(agent_prompt_refuses_claude_multiline_draft) or test(agent_prompt_allows_historic_glyph_with_empty_current_prompt) or test(agent_prompt_succeeds_when_claude_input_box_empty) or test(agent_prompt_unchanged_when_claude_working_with_draft_like_output) or test(agent_prompt_unchanged_when_claude_blocked) or test(agent_prompt_unchanged_for_agents_without_draft_pattern)' --status-level all --final-status-level all --failure-output all --success-output all > .ci/restored-run.log 2>&1
+          cargo nextest run --locked -E 'test(agent_prompt_refuses_claude_slash_draft) or test(agent_prompt_refuses_claude_ordinary_draft) or test(agent_prompt_refuses_claude_multiline_draft) or test(agent_prompt_allows_historic_glyph_with_empty_current_prompt) or test(agent_prompt_succeeds_when_claude_input_box_empty) or test(agent_prompt_unchanged_when_claude_working_with_draft_like_output) or test(agent_prompt_unchanged_when_claude_blocked) or test(agent_prompt_unchanged_for_agents_without_draft_pattern)' --status-level all --final-status-level all --failure-output immediate-final --success-output final > .ci/restored-run.log 2>&1
           RESTORED_RC=$?
           set -e
           cat .ci/restored-run.log
