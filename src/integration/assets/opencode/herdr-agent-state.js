@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=opencode
-// HERDR_INTEGRATION_VERSION=9
+// HERDR_INTEGRATION_VERSION=10
 
 import net from "node:net";
 
@@ -186,8 +186,23 @@ export const HerdrAgentStatePlugin = async () => {
           break;
         case "permission.asked":
         case "question.asked":
-        case "session.error":
           await reportState("blocked", sessionID);
+          break;
+        case "session.error":
+          // An esc esc aborted turn arrives as session.error carrying
+          // OpenCode's MessageAbortedError; the TUI itself filters it out of
+          // error surfacing (it renders the "interrupted" footer instead) and
+          // no session.idle or terminal session.status follows. Reporting it
+          // blocked would mislabel a user-cancelled turn, while leaving the
+          // previous working report would stick forever and stop consumers
+          // gating delivery on an idle/done turn boundary from draining. An
+          // aborted turn has ENDED: report the terminal idle state. Real
+          // errors keep reporting blocked.
+          if (properties.error?.name === "MessageAbortedError") {
+            await reportState("idle", sessionID);
+          } else {
+            await reportState("blocked", sessionID);
+          }
           break;
         case "session.idle":
           await reportState("idle", sessionID);

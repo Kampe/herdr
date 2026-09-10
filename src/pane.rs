@@ -1212,12 +1212,7 @@ fn wait_for_processes_to_exit(
         let child_wait_completed =
             child_wait_completed.is_some_and(|flag| flag.load(Ordering::Acquire));
         if pids.iter().all(|pid| {
-            !process_alive_for_shutdown(
-                *pid,
-                child_pid,
-                child_wait_completed,
-                process_exists,
-            )
+            !process_alive_for_shutdown(*pid, child_pid, child_wait_completed, process_exists)
         }) {
             return true;
         }
@@ -1254,11 +1249,7 @@ fn valid_shutdown_identity(pid: u32, caller_pid: u32) -> bool {
     pid > 1 && pid != caller_pid
 }
 
-fn validated_shutdown_targets(
-    caller_pid: u32,
-    child_pid: u32,
-    session_pids: Vec<u32>,
-) -> Vec<u32> {
+fn validated_shutdown_targets(caller_pid: u32, child_pid: u32, session_pids: Vec<u32>) -> Vec<u32> {
     if !valid_shutdown_identity(child_pid, caller_pid) {
         return Vec::new();
     }
@@ -1306,9 +1297,7 @@ fn shutdown_pane_processes_with(
             std::time::Duration::from_millis(250),
         ),
     ] {
-        let signal_pids = if child_wait_completed
-            .is_some_and(|flag| flag.load(Ordering::Acquire))
-        {
+        let signal_pids = if child_wait_completed.is_some_and(|flag| flag.load(Ordering::Acquire)) {
             pids.iter()
                 .copied()
                 .filter(|pid| *pid != child_pid)
@@ -3253,7 +3242,8 @@ mod tests {
     #[test]
     fn shutdown_with_fake_invalid_child_never_signals() {
         let signals = std::cell::RefCell::new(Vec::new());
-        let signal_processes = |pids: &[u32], signal| signals.borrow_mut().push((pids.to_vec(), signal));
+        let signal_processes =
+            |pids: &[u32], signal| signals.borrow_mut().push((pids.to_vec(), signal));
 
         shutdown_pane_processes_with(
             PaneId::from_raw(1),
@@ -3272,7 +3262,8 @@ mod tests {
     #[test]
     fn shutdown_with_fake_self_target_never_signals() {
         let signals = std::cell::RefCell::new(Vec::new());
-        let signal_processes = |pids: &[u32], signal| signals.borrow_mut().push((pids.to_vec(), signal));
+        let signal_processes =
+            |pids: &[u32], signal| signals.borrow_mut().push((pids.to_vec(), signal));
 
         shutdown_pane_processes_with(
             PaneId::from_raw(1),
@@ -3291,7 +3282,8 @@ mod tests {
     #[test]
     fn shutdown_with_fake_unowned_session_target_never_signals() {
         let signals = std::cell::RefCell::new(Vec::new());
-        let signal_processes = |pids: &[u32], signal| signals.borrow_mut().push((pids.to_vec(), signal));
+        let signal_processes =
+            |pids: &[u32], signal| signals.borrow_mut().push((pids.to_vec(), signal));
 
         shutdown_pane_processes_with(
             PaneId::from_raw(1),

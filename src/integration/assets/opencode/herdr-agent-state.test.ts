@@ -191,3 +191,96 @@ function requestParam(request: unknown, name: string): unknown {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
+
+test("reports aborted turn (MessageAbortedError) as idle", async () => {
+  // An esc esc aborted turn arrives as session.error carrying OpenCode's
+  // MessageAbortedError: OpenCode 1.18.20's own TUI filters exactly this
+  // error name out of error surfacing (it renders the "interrupted" footer
+  // instead), the session.status union is only idle/retry/busy (no
+  // "interrupted" value), and no session.idle follows the abort. Reporting
+  // the abort blocked would mislabel a user-cancelled turn, while leaving
+  // the last "working" report sticks indefinitely and consumers gating
+  // delivery on an idle/done turn boundary refuse to drain durably queued
+  // prompts. An aborted turn has ENDED: report terminal idle.
+  const plugin = await loadPlugin();
+
+  await plugin.event({
+    event: {
+      type: "session.status",
+      properties: { sessionID: "root-session", status: { type: "busy" } },
+    },
+  });
+  await plugin.event({
+    event: {
+      type: "session.error",
+      properties: {
+        sessionID: "root-session",
+        error: { name: "MessageAbortedError", data: { message: "aborted" } },
+      },
+    },
+  });
+
+  expect(requests.map(requestMethod)).toEqual([
+    "pane.report_agent",
+    "pane.report_agent",
+  ]);
+  expect(requests.map(requestState)).toEqual(["working", "idle"]);
+  expect(requests.map(requestSessionID)).toEqual(["root-session", "root-session"]);
+});
+
+test("reports real session errors as blocked", async () => {
+  // Errors that are not user aborts keep the blocked classification.
+  const plugin = await loadPlugin();
+
+  await plugin.event({
+    event: {
+      type: "session.status",
+      properties: { sessionID: "root-session", status: { type: "busy" } },
+    },
+  });
+  await plugin.event({
+    event: {
+      type: "session.error",
+      properties: {
+        sessionID: "root-session",
+        error: { name: "UnknownError", data: { message: "provider exploded" } },
+      },
+    },
+  });
+
+  expect(requests.map(requestMethod)).toEqual([
+    "pane.report_agent",
+    "pane.report_agent",
+  ]);
+  expect(requests.map(requestState)).toEqual(["working", "blocked"]);
+  expect(requests.map(requestSessionID)).toEqual(["root-session", "root-session"]);
+});
+
+test("does not report unknown session status types", async () => {
+  // Only the schema-backed status values move state. An unsupported status
+  // type (now or in the future) must not fabricate a state transition: the
+  // hook keeps its last authoritative report (it may still refresh session
+  // identity, which is not a state report).
+  const plugin = await loadPlugin();
+
+  await plugin.event({
+    event: {
+      type: "session.status",
+      properties: { sessionID: "root-session", status: { type: "busy" } },
+    },
+  });
+  await plugin.event({
+    event: {
+      type: "session.status",
+      properties: {
+        sessionID: "root-session",
+        status: { type: "interrupted" },
+      },
+    },
+  });
+
+  const stateReports = requests.filter(
+    (request) => requestMethod(request) === "pane.report_agent",
+  );
+  expect(stateReports.map(requestState)).toEqual(["working"]);
+});
