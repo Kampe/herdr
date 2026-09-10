@@ -428,6 +428,52 @@ pub(super) fn runtime_hosts_agent(
     live_runtime_agent(runtime) == Some(expected)
 }
 
+/// Draft guard for submitted prompts: operator-typed, not-yet-submitted text
+/// in the agent TUI's input box. A submitted prompt is appended to whatever
+/// is already on the input line, so a pane with a partial draft submits the
+/// concatenation instead of the task (reported 2026-09-10: an idle Claude
+/// pane with a `/login` draft got `/loginCoordinator` -> "Unknown command"
+/// and the --wait timed out). The prompt is therefore refused, fail-closed,
+/// with the observed draft quoted so the operator can finish or clear it;
+/// nothing is silently appended or discarded.
+///
+/// The screen model is the only native draft source: the child process owns
+/// its input state and no PTY API exposes it, so detection relies on the
+/// agent's rendered input-line glyph in the detection (bottom-buffer)
+/// snapshot. The pattern is per-agent and only agents with an
+/// evidence-verified input glyph are guarded (Claude Code renders the `❯`
+/// input line; empty box is the bare glyph). Working and blocked panes are
+/// exempt: submissions there are queued by the TUI and prompt queuing is the
+/// documented mechanism, and the guard must not change their behavior. This
+/// is intentionally narrow rather than a general input parser; agents
+/// without a verified glyph keep the historical append behavior.
+pub(super) fn pending_operator_draft(
+    agent: crate::detect::Agent,
+    state: crate::detect::AgentState,
+    runtime: &crate::terminal::TerminalRuntime,
+) -> Option<String> {
+    if matches!(
+        state,
+        crate::detect::AgentState::Working | crate::detect::AgentState::Blocked
+    ) {
+        return None;
+    }
+    let glyph = match agent {
+        crate::detect::Agent::Claude => '❯',
+        _ => return None,
+    };
+    for line in runtime.detection_text().lines() {
+        let mut chars = line.trim_start().chars();
+        if chars.next() == Some(glyph) {
+            let rest = chars.as_str().trim();
+            if !rest.is_empty() {
+                return Some(rest.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn live_runtime_agent(runtime: &crate::terminal::TerminalRuntime) -> Option<crate::detect::Agent> {
     let job = crate::detect::foreground_job(runtime.child_pid()?)?;
     crate::detect::identify_agent_in_job(&job)

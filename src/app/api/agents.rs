@@ -98,6 +98,18 @@ impl App {
                 ),
             );
         }
+        if let Some(draft) =
+            super::super::agents::pending_operator_draft(expected_agent, terminal.state, runtime)
+        {
+            return encode_error(
+                id,
+                "agent_prompt_draft_pending",
+                format!(
+                    "pane {} has unsubmitted operator input ({draft:?}); finish or clear it in the pane, then retry the prompt - it was not sent",
+                    params.target
+                ),
+            );
+        }
         let (text, enter) =
             crate::app::api_helpers::encode_api_submission_parts(runtime, &params.text);
         if let Err(err) = runtime.try_send_bytes(Bytes::from(text)) {
@@ -528,5 +540,188 @@ mod tests {
                 Some("shell-pane")
             );
         }
+    }
+
+    /// Fake terminal fixture: a Claude Code-like bottom region rendered
+    /// through the PTY byte path. The bare `❯` input glyph is the real
+    /// empty-box rendering (captured 2026-09-10 via `herdr agent read
+    /// --source visible` on an idle Claude pane); a draft renders as `❯ `
+    /// plus the typed text.
+    fn claude_bottom_frame(draft: Option<&str>) -> Vec<u8> {
+        let rule = "─".repeat(40);
+        let input_line = match draft {
+            Some(text) => format!("❯ {text}"),
+            None => "❯".to_string(),
+        };
+        let mut frame = String::new();
+        for i in 0..20 {
+            frame.push_str(&format!("context line {i:06}\r\n"));
+        }
+        frame.push_str(&rule);
+        frame.push_str("\r\n");
+        frame.push_str(&input_line);
+        frame.push_str("\r\n");
+        frame.push_str(&rule);
+        frame.push('\r');
+        frame.into_bytes()
+    }
+
+    fn app_with_claude_pane(
+        state: AgentState,
+        frame: &[u8],
+    ) -> (App, String, tokio::sync::mpsc::Receiver<Bytes>) {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::Claude), state);
+        let (runtime, rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80, 24, 0, b"", 1,
+            );
+        runtime.test_process_pty_bytes(frame);
+        app.state.insert_test_runtime(pane_id, runtime);
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+        (app, public_pane_id, rx)
+    }
+
+    fn prompt_response(app: &mut App, target: &str, text: &str) -> String {
+        app.handle_agent_prompt(
+            "req".into(),
+            AgentPromptParams {
+                target: target.to_string(),
+                text: text.to_string(),
+                wait: None,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_refuses_claude_slash_draft() {
+        let (mut app, target, mut rx) =
+            app_with_claude_pane(AgentState::Idle, &claude_bottom_frame(Some("/login")));
+        let response = prompt_response(&mut app, &target, "review the recovery bundle");
+        assert!(
+            response.contains("agent_prompt_draft_pending"),
+            "slash draft must fail closed: {response}"
+        );
+        assert!(
+            response.contains("/login"),
+            "error must quote the observed draft: {response}"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "refused prompt must not write to the pane"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_refuses_claude_ordinary_draft() {
+        let (mut app, target, mut rx) = app_with_claude_pane(
+            AgentState::Idle,
+            &claude_bottom_frame(Some("half-typed fix for the race")),
+        );
+        let response = prompt_response(&mut app, &target, "review the recovery bundle");
+        assert!(
+            response.contains("agent_prompt_draft_pending"),
+            "ordinary draft must fail closed: {response}"
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_refuses_claude_multiline_draft() {
+        let base = String::from_utf8(claude_bottom_frame(Some("first draft line"))).unwrap();
+        // continuation line inside the input box, below the glyph line
+        let frame = base.replacen(
+            "❯ first draft line\r\n",
+            "❯ first draft line\r\n    continuation two\r\n",
+            1,
+        );
+        let (mut app, target, mut rx) = app_with_claude_pane(AgentState::Idle, frame.as_bytes());
+        let response = prompt_response(&mut app, &target, "review the recovery bundle");
+        assert!(
+            response.contains("agent_prompt_draft_pending"),
+            "multiline draft must fail closed: {response}"
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_succeeds_when_claude_input_box_empty() {
+        let (mut app, target, mut rx) =
+            app_with_claude_pane(AgentState::Idle, &claude_bottom_frame(None));
+        let response = prompt_response(&mut app, &target, "review the recovery bundle");
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::AgentPrompted { .. }
+        ));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            Bytes::from_static(b"\x1b[200~review the recovery bundle\x1b[201~")
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            Bytes::from_static(b"\r")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_unchanged_when_claude_working_with_draft_like_output() {
+        let (mut app, target, mut rx) =
+            app_with_claude_pane(AgentState::Working, &claude_bottom_frame(Some("/login")));
+        let response = prompt_response(&mut app, &target, "review the recovery bundle");
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(
+            matches!(success.result, ResponseResult::AgentPrompted { .. }),
+            "working panes keep queued-prompt behavior: {response}"
+        );
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_unchanged_when_claude_blocked() {
+        let (mut app, target, mut rx) =
+            app_with_claude_pane(AgentState::Blocked, &claude_bottom_frame(Some("/login")));
+        let response = prompt_response(&mut app, &target, "review the recovery bundle");
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::AgentPrompted { .. }
+        ));
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_unchanged_for_agents_without_draft_pattern() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80, 24, 0, b"", 1,
+            );
+        runtime.test_process_pty_bytes(&claude_bottom_frame(Some("/login")));
+        app.state.insert_test_runtime(pane_id, runtime);
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+        let response = prompt_response(&mut app, &public_pane_id, "review the recovery bundle");
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(
+            matches!(success.result, ResponseResult::AgentPrompted { .. }),
+            "agents without a verified draft glyph keep historical behavior: {response}"
+        );
+        assert!(rx.try_recv().is_ok());
     }
 }
