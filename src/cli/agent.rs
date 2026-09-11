@@ -511,8 +511,18 @@ fn wait_for_named_agent(
     loop {
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             // Let the server reconcile its matching startup deadline before
-            // returning so the pending name is immediately reusable.
-            let _ = resolve_agent_target_unchecked(name, "cli:agent:start:timeout");
+            // returning so the pending name is immediately reusable. That
+            // reconcile also promotes a launch that attached but is still on
+            // its first turn, so report the agent as started instead of
+            // timing out on a live one.
+            let response = resolve_agent_target_unchecked(name, "cli:agent:start:timeout")?;
+            let agent = &response["result"]["agent"];
+            if agent["terminal_id"].as_str() == Some(expected_terminal_id)
+                && agent["name"].as_str() == Some(name)
+                && agent["interactive_ready"].as_bool().unwrap_or(false)
+            {
+                return Ok(Ok(agent.clone()));
+            }
             return Ok(Err(agent_wait_timeout()));
         }
         let poll_id = "cli:agent:start";
