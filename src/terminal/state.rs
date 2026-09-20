@@ -2176,7 +2176,11 @@ mod tests {
         // expires while the agent is alive: the deadline must not unregister it.
         still_working.set_detected_state(Some(Agent::Pi), AgentState::Working);
         assert!(still_working.reconcile_managed_agent_at(now + Duration::from_millis(20), false));
-        assert_eq!(still_working.agent_name.as_deref(), Some("reviewer"));
+        assert_eq!(
+            still_working.agent_name.as_deref(),
+            Some("reviewer"),
+            "startup deadline cleared the attached Working agent"
+        );
         assert_eq!(still_working.managed_agent_kind(), Some(Agent::Pi));
         assert!(still_working.managed_agent_interactive_ready());
         assert!(!still_working.managed_agent_launch_pending());
