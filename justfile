@@ -11,6 +11,11 @@ test:
 test-one filter:
     cargo nextest run --locked "{{filter}}" --status-level fail --final-status-level fail --failure-output final --success-output never
 
+# Focused causal controls for named-agent startup deadlines (Ubuntu CI).
+[unix]
+test-deadline-controls:
+    bun scripts/verify_agent_deadline_controls.mjs
+
 # Run fast local lint checks
 [unix]
 lint:

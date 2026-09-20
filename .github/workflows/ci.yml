@@ -55,7 +55,7 @@ jobs:
           - os: windows-latest
             kind: windows
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 25 || 15 }}
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -136,6 +136,26 @@ jobs:
       - name: Run checks
         if: matrix.kind == 'unix'
         run: just ci '${{ matrix.nextest_filter }}'
+
+      - name: Prove agent deadline guards
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 9
+        run: just test-deadline-controls
+
+      - name: Verify deadline source restoration
+        if: always() && matrix.os == 'ubuntu-latest'
+        timeout-minutes: 1
+        run: git diff --exit-code HEAD -- src/cli/agent.rs src/terminal/state.rs
+
+      - name: Retain agent deadline control evidence
+        if: always() && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-deadline-controls-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/deadline-controls/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Run Windows checks
         if: matrix.kind == 'windows'

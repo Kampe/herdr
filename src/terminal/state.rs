@@ -1870,6 +1870,24 @@ impl TerminalState {
         } = managed.phase
         {
             if now >= deadline {
+                // The deadline bounds attachment, not readiness to take a
+                // prompt. A launch that demonstrably attached - the pane hosts
+                // the expected kind in a recognized interactive state - must
+                // survive a first turn that outlasts the caller's wait.
+                // Process presence alone, with an Unknown screen state, does
+                // not establish readiness to receive queued prompts.
+                if known_agent == Some(managed.kind)
+                    && matches!(
+                        self.state,
+                        AgentState::Idle | AgentState::Blocked | AgentState::Working
+                    )
+                {
+                    self.managed_agent = Some(ManagedAgent {
+                        kind: managed.kind,
+                        phase: ManagedAgentPhase::Active,
+                    });
+                    return true;
+                }
                 self.clear_agent_name();
                 return true;
             }
@@ -2141,6 +2159,54 @@ mod tests {
         assert!(timed_out.reconcile_managed_agent_at(now + Duration::from_millis(20), false));
         assert_eq!(timed_out.agent_name, None);
         assert_eq!(timed_out.managed_agent_kind(), None);
+    }
+
+    #[test]
+    fn managed_agent_start_deadline_keeps_an_attached_agent() {
+        let now = Instant::now();
+        let mut still_working = test_terminal();
+        still_working.begin_managed_agent(
+            "reviewer".into(),
+            Agent::Pi,
+            now,
+            Duration::from_millis(10),
+            Duration::from_millis(20),
+        );
+        // The launch attached and went straight to work, so the caller's wait
+        // expires while the agent is alive: the deadline must not unregister it.
+        still_working.set_detected_state(Some(Agent::Pi), AgentState::Working);
+        assert!(still_working.reconcile_managed_agent_at(now + Duration::from_millis(20), false));
+        assert_eq!(
+            still_working.agent_name.as_deref(),
+            Some("reviewer"),
+            "startup deadline cleared the attached Working agent"
+        );
+        assert_eq!(still_working.managed_agent_kind(), Some(Agent::Pi));
+        assert!(still_working.managed_agent_interactive_ready());
+        assert!(!still_working.managed_agent_launch_pending());
+    }
+
+    #[test]
+    fn managed_agent_start_deadline_does_not_promote_unknown_process_presence() {
+        let now = Instant::now();
+        let mut terminal = test_terminal();
+        terminal.begin_managed_agent(
+            "reviewer".into(),
+            Agent::Pi,
+            now,
+            Duration::from_millis(10),
+            Duration::from_millis(20),
+        );
+        terminal.set_detected_state(Some(Agent::Pi), AgentState::Unknown);
+        assert_eq!(terminal.effective_known_agent(), Some(Agent::Pi));
+        assert!(terminal.managed_agent_launch_pending());
+        assert!(terminal.reconcile_managed_agent_at(now + Duration::from_millis(20), false));
+        assert!(
+            !terminal.managed_agent_interactive_ready(),
+            "matching process presence with Unknown state became interactive-ready"
+        );
+        assert_eq!(terminal.agent_name, None);
+        assert_eq!(terminal.managed_agent_kind(), None);
     }
 
     #[test]

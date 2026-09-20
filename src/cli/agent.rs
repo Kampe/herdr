@@ -511,8 +511,21 @@ fn wait_for_named_agent(
     loop {
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             // Let the server reconcile its matching startup deadline before
-            // returning so the pending name is immediately reusable.
-            let _ = resolve_agent_target_unchecked(name, "cli:agent:start:timeout");
+            // returning so the pending name is immediately reusable. That
+            // reconcile also promotes a launch that attached but is still on
+            // its first turn, so report the agent as started instead of
+            // timing out on a live one.
+            let response = resolve_agent_target_unchecked(name, "cli:agent:start:timeout")?;
+            if response.get("error").is_none() {
+                if let Some(outcome) = named_agent_start_outcome(
+                    &response["result"]["agent"],
+                    name,
+                    expected_kind,
+                    expected_terminal_id,
+                ) {
+                    return Ok(outcome);
+                }
+            }
             return Ok(Err(agent_wait_timeout()));
         }
         let poll_id = "cli:agent:start";
@@ -529,35 +542,47 @@ fn wait_for_named_agent(
                 continue;
             }
         }
-        let agent = &response["result"]["agent"];
-        let outcome = if agent["terminal_id"].as_str() != Some(expected_terminal_id) {
-            Some(Err(agent_name_lost_error("cli:agent:start", name)))
-        } else if let Some(actual) = agent["agent"]
-            .as_str()
-            .filter(|actual| *actual != expected_kind)
-        {
-            Some(Err(cli_agent_error(
-                "cli:agent:start",
-                "agent_kind_mismatch",
-                format!("expected {expected_kind}, detected {actual}"),
-            )))
-        } else if agent["name"].as_str() != Some(name) {
-            Some(Err(agent_name_lost_error("cli:agent:start", name)))
-        } else if agent["interactive_ready"].as_bool().unwrap_or(false) {
-            Some(Ok(agent.clone()))
-        } else if !agent["launch_pending"].as_bool().unwrap_or(false) {
-            Some(Err(cli_agent_error(
-                "cli:agent:start",
-                "agent_start_failed",
-                "agent process exited before becoming interactive",
-            )))
-        } else {
-            None
-        };
-        if let Some(outcome) = outcome {
+        if let Some(outcome) = named_agent_start_outcome(
+            &response["result"]["agent"],
+            name,
+            expected_kind,
+            expected_terminal_id,
+        ) {
             return Ok(outcome);
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn named_agent_start_outcome(
+    agent: &serde_json::Value,
+    name: &str,
+    expected_kind: &str,
+    expected_terminal_id: &str,
+) -> Option<Result<serde_json::Value, serde_json::Value>> {
+    if agent["terminal_id"].as_str() != Some(expected_terminal_id) {
+        Some(Err(agent_name_lost_error("cli:agent:start", name)))
+    } else if let Some(actual) = agent["agent"]
+        .as_str()
+        .filter(|actual| *actual != expected_kind)
+    {
+        Some(Err(cli_agent_error(
+            "cli:agent:start",
+            "agent_kind_mismatch",
+            format!("expected {expected_kind}, detected {actual}"),
+        )))
+    } else if agent["name"].as_str() != Some(name) {
+        Some(Err(agent_name_lost_error("cli:agent:start", name)))
+    } else if agent["interactive_ready"].as_bool().unwrap_or(false) {
+        Some(Ok(agent.clone()))
+    } else if !agent["launch_pending"].as_bool().unwrap_or(false) {
+        Some(Err(cli_agent_error(
+            "cli:agent:start",
+            "agent_start_failed",
+            "agent process exited before becoming interactive",
+        )))
+    } else {
+        None
     }
 }
 
