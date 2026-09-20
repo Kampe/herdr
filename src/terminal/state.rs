@@ -1872,12 +1872,16 @@ impl TerminalState {
             if now >= deadline {
                 // The deadline bounds attachment, not readiness to take a
                 // prompt. A launch that demonstrably attached - the pane hosts
-                // exactly the agent that was launched - must survive a first
-                // turn that outlasts the caller's wait, or a live agent loses
-                // its name because a client stopped watching (2026-09-10: a
-                // Claude pane still rendering its first turn at >2m was
-                // unregistered by its own 60s start timeout).
-                if known_agent == Some(managed.kind) {
+                // the expected kind in a recognized interactive state - must
+                // survive a first turn that outlasts the caller's wait.
+                // Process presence alone, with an Unknown screen state, does
+                // not establish readiness to receive queued prompts.
+                if known_agent == Some(managed.kind)
+                    && matches!(
+                        self.state,
+                        AgentState::Idle | AgentState::Blocked | AgentState::Working
+                    )
+                {
                     self.managed_agent = Some(ManagedAgent {
                         kind: managed.kind,
                         phase: ManagedAgentPhase::Active,
@@ -2176,6 +2180,29 @@ mod tests {
         assert_eq!(still_working.managed_agent_kind(), Some(Agent::Pi));
         assert!(still_working.managed_agent_interactive_ready());
         assert!(!still_working.managed_agent_launch_pending());
+    }
+
+    #[test]
+    fn managed_agent_start_deadline_does_not_promote_unknown_process_presence() {
+        let now = Instant::now();
+        let mut terminal = test_terminal();
+        terminal.begin_managed_agent(
+            "reviewer".into(),
+            Agent::Pi,
+            now,
+            Duration::from_millis(10),
+            Duration::from_millis(20),
+        );
+        terminal.set_detected_state(Some(Agent::Pi), AgentState::Unknown);
+        assert_eq!(terminal.effective_known_agent(), Some(Agent::Pi));
+        assert!(terminal.managed_agent_launch_pending());
+        assert!(terminal.reconcile_managed_agent_at(now + Duration::from_millis(20), false));
+        assert!(
+            !terminal.managed_agent_interactive_ready(),
+            "matching process presence with Unknown state became interactive-ready"
+        );
+        assert_eq!(terminal.agent_name, None);
+        assert_eq!(terminal.managed_agent_kind(), None);
     }
 
     #[test]
