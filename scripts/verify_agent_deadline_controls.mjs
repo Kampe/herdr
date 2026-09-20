@@ -142,6 +142,32 @@ const cases = [
   ["unit", "terminal::state::tests::managed_agent_mismatch_and_timeout_release_name"],
 ];
 
+function panicBelongsTo(stderr, name) {
+  const prefix = `thread '${name}'`;
+  return stderr.split("\n").some((line) => line.startsWith(prefix)
+    && /^(?: \([0-9]+\))? panicked at /.test(line.slice(prefix.length)));
+}
+
+function checkPanicOwnerFormats() {
+  const name = cases[0][1];
+  // Rust's current libtest includes a numeric thread ID after the full name.
+  for (const suffix of ["", " (16231)"]) {
+    assert.ok(panicBelongsTo(`thread '${name}'${suffix} panicked at fixture.rs:79:5:\n`, name));
+  }
+  for (const header of [
+    `thread '${name}_other' (16231) panicked at `,
+    `thread '${name}' (not-a-number) panicked at `,
+    `thread '${name}' (16231 panicked at `,
+    `thread '${name}' () panicked at `,
+    `thread '${name}' (-16231) panicked at `,
+    `prefix thread '${name}' (16231) panicked at `,
+  ]) {
+    assert.ok(!panicBelongsTo(header, name), `accepted malformed/wrong panic owner: ${header}`);
+  }
+  fs.writeFileSync(path.join(artifacts, "panic-owner-formats.log"),
+    "PASS legacy and numeric-ID headers; rejected wrong owner and malformed IDs\n");
+}
+
 async function checkCase(label, binary, name, marker) {
   const result = await run(label, binary, [name, "--exact", "--nocapture", "--test-threads=1"], 30_000);
   const failed = Boolean(marker);
@@ -155,7 +181,7 @@ async function checkCase(label, binary, name, marker) {
     : "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;";
   assert.ok(result.stdout.includes(summary), `${label}: missing exact execution counts`);
   if (failed) {
-    assert.ok(result.stderr.includes(`thread '${name}' panicked at `), `${label}: wrong panic owner`);
+    assert.ok(panicBelongsTo(result.stderr, name), `${label}: wrong panic owner`);
     assert.ok(result.stderr.includes(marker), `${label}: wrong assertion`);
   }
 }
@@ -220,6 +246,7 @@ const controls = [
 ];
 
 try {
+  checkPanicOwnerFormats();
   const head = await run("source-head", "git", ["rev-parse", "HEAD"], 10_000);
   assert.equal(head.code, 0, "cannot record candidate identity");
   const clean = await run("source-clean", "git", ["diff", "--exit-code", "HEAD", "--", ...originals.keys()], 10_000);
